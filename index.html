@@ -1,0 +1,988 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>نظام إدارة صيانة الموبايل - المهندس طارق بلال</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;500;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    * { font-family: 'Tajawal', system-ui, sans-serif; }
+    ::-webkit-scrollbar { width: 6px; height: 6px; }
+    ::-webkit-scrollbar-thumb { background: #22315C; border-radius: 10px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    input::placeholder, textarea::placeholder { color: #56638A; }
+    @keyframes floatUp { from { opacity: 0; transform: translateY(10px);} to { opacity: 1; transform: translateY(0);} }
+    .fade-in { animation: floatUp .25s ease-out; }
+    .status-badge { padding: 4px 12px; border-radius: 20px; font-size: 11px; font-weight: 700; }
+    .gold-text { background: linear-gradient(135deg, #FFD700, #FFA500); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    .gold-border { border-image: linear-gradient(135deg, #FFD700, #FFA500) 1; }
+  </style>
+</head>
+<body style="background: radial-gradient(1100px 500px at 15% -10%, rgba(59,110,255,0.16), transparent 60%), radial-gradient(900px 500px at 100% 0%, rgba(45,212,191,0.08), transparent 55%), #060913; color: #E7ECFF; min-height: 100vh;">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    // ثوابت النظام - المهندس طارق بلال
+    const SYSTEM_OWNER_NAME = 'المهندس طارق بلال';
+    const SYSTEM_OWNER_EMAIL = 'tarekbelal457@gmail.com';
+    const SYSTEM_OWNER_PHONE = '01033262584';
+    const DEFAULT_PASSWORD = 'teto9090@&$';
+    const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+    
+    // توليد رمز استرداد فريد
+    const generateRecoveryCode = () => {
+      const chars = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789';
+      let code = '';
+      for (let i = 0; i < 8; i++) {
+        code += chars.charAt(Math.floor(Math.random() * chars.length));
+      }
+      return code;
+    };
+
+    const STATUS = {
+      received: { label: 'مستلم', color: '#4C8DFF', bg: 'rgba(76,141,255,0.14)', icon: '📥' },
+      in_progress: { label: 'قيد الإصلاح', color: '#F5A524', bg: 'rgba(245,165,36,0.14)', icon: '🔧' },
+      ready: { label: 'جاهز للتسليم', color: '#2DD4BF', bg: 'rgba(45,212,191,0.14)', icon: '✅' },
+      delivered: { label: 'تم التسليم', color: '#22C55E', bg: 'rgba(34,197,94,0.16)', icon: '📦' },
+    };
+
+    function App() {
+      // Auth State
+      const [authed, setAuthed] = useState(false);
+      const [authPassword, setAuthPassword] = useState(DEFAULT_PASSWORD);
+      const [pwInput, setPwInput] = useState('');
+      const [showPw, setShowPw] = useState(false);
+      const [loginError, setLoginError] = useState('');
+      const [isRegisterMode, setIsRegisterMode] = useState(false);
+      const [registerData, setRegisterData] = useState({ username: '', email: '', phone: '', password: '', confirmPassword: '', recoveryCode: '' });
+      const [registerError, setRegisterError] = useState('');
+      const [registerSuccess, setRegisterSuccess] = useState('');
+
+      // App State
+      const [shopName, setShopName] = useState('مركز صيانة المهندس طارق بلال');
+      const [devices, setDevices] = useState([]);
+      const [expenses, setExpenses] = useState([]);
+      const [currentUser, setCurrentUser] = useState(null);
+      const [activeTab, setActiveTab] = useState('dashboard');
+      const [systemRecoveryCode, setSystemRecoveryCode] = useState('');
+      const [lastBackupTime, setLastBackupTime] = useState('');
+      
+      // Device Form
+      const [showDeviceForm, setShowDeviceForm] = useState(false);
+      const [editingDevice, setEditingDevice] = useState(null);
+      const [deviceForm, setDeviceForm] = useState({
+        id: null, customerName: '', phone: '', deviceName: '', model: '', issue: '',
+        price: '', deposit: '', status: 'received', notes: '', dateReceived: new Date().toISOString().slice(0, 10),
+        dateDelivered: '', serialNumber: '', warranty: '', technician: ''
+      });
+
+      // Filters
+      const [search, setSearch] = useState('');
+      const [statusFilter, setStatusFilter] = useState('all');
+      const [dateFilter, setDateFilter] = useState('all');
+      const [sortBy, setSortBy] = useState('date');
+
+      // Modal states
+      const [showExpenseForm, setShowExpenseForm] = useState(false);
+      const [expenseForm, setExpenseForm] = useState({ title: '', amount: '', date: new Date().toISOString().slice(0, 10), category: '' });
+      const [confirmDeleteId, setConfirmDeleteId] = useState(null);
+      const [showDeviceDetails, setShowDeviceDetails] = useState(null);
+      
+      // Import/Export
+      const [showBackupModal, setShowBackupModal] = useState(false);
+      const [showImportModal, setShowImportModal] = useState(false);
+      const [importText, setImportText] = useState('');
+      const [importMsg, setImportMsg] = useState({ type: '', text: '' });
+      const [pwMsg, setPwMsg] = useState({ type: '', text: '' });
+      const [backupMsg, setBackupMsg] = useState({ type: '', text: '' });
+
+      // توليد رمز استرداد عند تحميل النظام
+      useEffect(() => {
+        let code = localStorage.getItem('system-recovery-code');
+        if (!code) {
+          code = generateRecoveryCode();
+          localStorage.setItem('system-recovery-code', code);
+        }
+        setSystemRecoveryCode(code);
+        
+        const backupTime = localStorage.getItem('last-backup-time');
+        if (backupTime) setLastBackupTime(backupTime);
+      }, []);
+
+      // Users management
+      const getUsers = () => {
+        try {
+          const users = localStorage.getItem('users');
+          return users ? JSON.parse(users) : [];
+        } catch { return []; }
+      };
+
+      const saveUsers = (users) => {
+        try { localStorage.setItem('users', JSON.stringify(users)); } catch {}
+      };
+
+      // Initialize default user
+      useEffect(() => {
+        const users = getUsers();
+        if (users.length === 0) {
+          saveUsers([{ 
+            id: uid(), 
+            username: 'tarek', 
+            email: SYSTEM_OWNER_EMAIL, 
+            phone: SYSTEM_OWNER_PHONE,
+            password: DEFAULT_PASSWORD, 
+            recoveryCode: systemRecoveryCode,
+            createdAt: new Date().toISOString() 
+          }]);
+        }
+      }, [systemRecoveryCode]);
+
+      // Load data
+      useEffect(() => {
+        try {
+          const s = localStorage.getItem('shop-settings');
+          if (s) {
+            const parsed = JSON.parse(s);
+            if (parsed.shopName) setShopName(parsed.shopName);
+          }
+          const pw = localStorage.getItem('auth-password');
+          if (pw) setAuthPassword(pw);
+        } catch {}
+      }, []);
+
+      useEffect(() => {
+        if (!authed) return;
+        try {
+          const d = localStorage.getItem('devices');
+          setDevices(d ? JSON.parse(d) : []);
+          const ex = localStorage.getItem('expenses');
+          setExpenses(ex ? JSON.parse(ex) : []);
+        } catch {
+          setDevices([]);
+          setExpenses([]);
+        }
+      }, [authed]);
+
+      // حفظ البيانات مع نسخ احتياطي تلقائي
+      const saveDevices = (next) => {
+        setDevices(next);
+        try { 
+          localStorage.setItem('devices', JSON.stringify(next));
+          autoBackup();
+        } catch {}
+      };
+
+      const saveExpenses = (next) => {
+        setExpenses(next);
+        try { 
+          localStorage.setItem('expenses', JSON.stringify(next));
+          autoBackup();
+        } catch {}
+      };
+
+      const saveShopName = (name) => {
+        setShopName(name);
+        try { localStorage.setItem('shop-settings', JSON.stringify({ shopName: name })); } catch {}
+      };
+
+      // النسخ الاحتياطي التلقائي
+      const autoBackup = () => {
+        try {
+          const data = {
+            devices: JSON.parse(localStorage.getItem('devices') || '[]'),
+            expenses: JSON.parse(localStorage.getItem('expenses') || '[]'),
+            users: JSON.parse(localStorage.getItem('users') || '[]'),
+            shopName: localStorage.getItem('shop-settings'),
+            backupTime: new Date().toISOString(),
+            recoveryCode: systemRecoveryCode
+          };
+          localStorage.setItem('auto-backup', JSON.stringify(data));
+          setLastBackupTime(new Date().toISOString());
+          localStorage.setItem('last-backup-time', new Date().toISOString());
+        } catch (e) {
+          console.error('Auto backup failed:', e);
+        }
+      };
+
+      // تصدير البيانات بصيغ مختلفة
+      const exportData = (format) => {
+        const data = {
+          devices: devices,
+          expenses: expenses,
+          shopName: shopName,
+          exportTime: new Date().toISOString(),
+          recoveryCode: systemRecoveryCode,
+          version: '1.0',
+          owner: SYSTEM_OWNER_NAME
+        };
+
+        if (format === 'json') {
+          const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+          downloadFile(blob, `backup_${new Date().toISOString().slice(0,10)}.json`);
+        } else if (format === 'csv') {
+          let csv = `المهندس طارق بلال - مركز صيانة الموبايل\n\nالعميل,الهاتف,الجهاز,الموديل,السعر,المدفوع,الحالة,التاريخ\n`;
+          devices.forEach(d => {
+            csv += `${d.customerName},${d.phone || ''},${d.deviceName},${d.model || ''},${d.price || 0},${d.deposit || 0},${STATUS[d.status]?.label || d.status},${d.dateReceived}\n`;
+          });
+          const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
+          downloadFile(blob, `devices_${new Date().toISOString().slice(0,10)}.csv`);
+        }
+        setBackupMsg({ type: 'success', text: `تم التصدير بصيغة ${format.toUpperCase()}` });
+        setTimeout(() => setBackupMsg({ type: '', text: '' }), 3000);
+      };
+
+      const downloadFile = (blob, filename) => {
+        const link = document.createElement('a');
+        link.href = URL.createObjectURL(blob);
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(link.href);
+      };
+
+      // استيراد البيانات
+      const importData = (text) => {
+        try {
+          const data = JSON.parse(text);
+          if (!data.devices || !data.expenses) {
+            setImportMsg({ type: 'error', text: 'بيانات غير صالحة' });
+            return;
+          }
+          if (data.recoveryCode !== systemRecoveryCode) {
+            setImportMsg({ type: 'error', text: 'رمز الاسترداد غير صحيح' });
+            return;
+          }
+          saveDevices(data.devices);
+          saveExpenses(data.expenses);
+          if (data.shopName) saveShopName(data.shopName);
+          setImportMsg({ type: 'success', text: 'تم استيراد البيانات بنجاح!' });
+          setTimeout(() => setImportMsg({ type: '', text: '' }), 3000);
+          setShowImportModal(false);
+          setImportText('');
+        } catch (e) {
+          setImportMsg({ type: 'error', text: 'خطأ في استيراد البيانات' });
+        }
+      };
+
+      // Auth handlers
+      const handleLogin = (e) => {
+        e.preventDefault();
+        const users = getUsers();
+        const user = users.find(u => u.username === pwInput || u.email === pwInput || u.phone === pwInput);
+        if (user) {
+          setLoginError('');
+          setCurrentUser(user);
+          setAuthed(true);
+          setPwInput('');
+        } else {
+          setLoginError('اسم المستخدم أو كلمة المرور غير صحيحة');
+        }
+      };
+
+      const handleRegister = (e) => {
+        e.preventDefault();
+        setRegisterError('');
+        setRegisterSuccess('');
+
+        if (!registerData.username.trim()) { setRegisterError('يرجى إدخال اسم المستخدم'); return; }
+        if (!registerData.email.trim()) { setRegisterError('يرجى إدخال البريد الإلكتروني'); return; }
+        if (!registerData.phone.trim()) { setRegisterError('يرجى إدخال رقم الهاتف'); return; }
+        if (registerData.password.length < 6) { setRegisterError('كلمة المرور يجب أن تكون 6 أحرف على الأقل'); return; }
+        if (registerData.password !== registerData.confirmPassword) { setRegisterError('كلمة المرور غير متطابقة'); return; }
+
+        const users = getUsers();
+        if (users.find(u => u.username === registerData.username)) { setRegisterError('اسم المستخدم موجود بالفعل'); return; }
+        if (users.find(u => u.email === registerData.email)) { setRegisterError('البريد الإلكتروني موجود بالفعل'); return; }
+        if (users.find(u => u.phone === registerData.phone)) { setRegisterError('رقم الهاتف موجود بالفعل'); return; }
+
+        const recoveryCode = generateRecoveryCode();
+        const newUser = { 
+          id: uid(), 
+          username: registerData.username, 
+          email: registerData.email, 
+          phone: registerData.phone,
+          password: registerData.password,
+          recoveryCode: recoveryCode,
+          createdAt: new Date().toISOString() 
+        };
+        saveUsers([...users, newUser]);
+        setRegisterSuccess(`تم إنشاء الحساب بنجاح! رمز الاسترداد: ${recoveryCode}`);
+        setTimeout(() => { setIsRegisterMode(false); setRegisterSuccess(''); }, 3000);
+      };
+
+      const resetPassword = () => {
+        const users = getUsers();
+        const adminUser = users.find(u => u.email === SYSTEM_OWNER_EMAIL);
+        if (adminUser) {
+          const newPassword = generateRecoveryCode().toLowerCase();
+          adminUser.password = newPassword;
+          saveUsers(users.map(u => u.id === adminUser.id ? adminUser : u));
+          setAuthPassword(newPassword);
+          localStorage.setItem('auth-password', newPassword);
+          setPwMsg({ type: 'success', text: `تم إعادة تعيين كلمة المرور: ${newPassword}` });
+          setTimeout(() => setPwMsg({ type: '', text: '' }), 5000);
+        }
+      };
+
+      // Device CRUD
+      const addDevice = () => {
+        if (!deviceForm.customerName.trim() || !deviceForm.deviceName.trim()) {
+          alert('يرجى إدخال اسم العميل والجهاز');
+          return;
+        }
+        const newDevice = {
+          ...deviceForm,
+          id: uid(),
+          dateReceived: deviceForm.dateReceived || new Date().toISOString().slice(0, 10),
+          createdAt: new Date().toISOString()
+        };
+        saveDevices([newDevice, ...devices]);
+        setShowDeviceForm(false);
+        resetDeviceForm();
+      };
+
+      const updateDevice = () => {
+        const updated = devices.map(d => d.id === editingDevice.id ? { ...deviceForm, id: d.id } : d);
+        saveDevices(updated);
+        setShowDeviceForm(false);
+        setEditingDevice(null);
+        resetDeviceForm();
+      };
+
+      const deleteDevice = (id) => {
+        saveDevices(devices.filter(d => d.id !== id));
+        setConfirmDeleteId(null);
+      };
+
+      const resetDeviceForm = () => {
+        setDeviceForm({
+          id: null, customerName: '', phone: '', deviceName: '', model: '', issue: '',
+          price: '', deposit: '', status: 'received', notes: '', dateReceived: new Date().toISOString().slice(0, 10),
+          dateDelivered: '', serialNumber: '', warranty: '', technician: ''
+        });
+      };
+
+      const editDevice = (device) => {
+        setEditingDevice(device);
+        setDeviceForm(device);
+        setShowDeviceForm(true);
+      };
+
+      const updateStatus = (id, newStatus) => {
+        const updated = devices.map(d => {
+          if (d.id === id) {
+            const updates = { status: newStatus };
+            if (newStatus === 'delivered') {
+              updates.dateDelivered = new Date().toISOString().slice(0, 10);
+            }
+            return { ...d, ...updates };
+          }
+          return d;
+        });
+        saveDevices(updated);
+      };
+
+      // Expense CRUD
+      const addExpense = () => {
+        if (!expenseForm.title.trim() || !expenseForm.amount) {
+          alert('يرجى إدخال عنوان وقيمة المصروف');
+          return;
+        }
+        saveExpenses([{ ...expenseForm, id: uid(), createdAt: new Date().toISOString() }, ...expenses]);
+        setShowExpenseForm(false);
+        setExpenseForm({ title: '', amount: '', date: new Date().toISOString().slice(0, 10), category: '' });
+      };
+
+      const deleteExpense = (id) => {
+        saveExpenses(expenses.filter(e => e.id !== id));
+      };
+
+      // Statistics
+      const stats = useMemo(() => {
+        const total = devices.length;
+        const active = devices.filter(d => d.status !== 'delivered');
+        const ready = devices.filter(d => d.status === 'ready');
+        const delivered = devices.filter(d => d.status === 'delivered');
+        const totalIncome = delivered.reduce((s, d) => s + (Number(d.price) || 0), 0);
+        const totalExpenses = expenses.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+        const totalDeposits = devices.reduce((s, d) => s + (Number(d.deposit) || 0), 0);
+        const pending = active.reduce((s, d) => s + ((Number(d.price) || 0) - (Number(d.deposit) || 0)), 0);
+        const today = new Date().toISOString().slice(0, 10);
+        const todayDevices = devices.filter(d => d.dateReceived === today);
+        const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        const weekDevices = devices.filter(d => d.dateReceived >= weekAgo);
+        
+        return { total, activeCount: active.length, readyCount: ready.length, deliveredCount: delivered.length,
+          totalIncome, totalExpenses, totalDeposits, netProfit: totalIncome - totalExpenses, pending,
+          todayDevices: todayDevices.length, weekDevices: weekDevices.length };
+      }, [devices, expenses]);
+
+      // Filtered devices
+      const filteredDevices = useMemo(() => {
+        const todayStr = new Date().toISOString().slice(0, 10);
+        const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+        let filtered = devices;
+
+        if (statusFilter !== 'all') {
+          filtered = filtered.filter(d => d.status === statusFilter);
+        }
+        if (dateFilter === 'today') {
+          filtered = filtered.filter(d => d.dateReceived === todayStr);
+        } else if (dateFilter === 'week') {
+          filtered = filtered.filter(d => d.dateReceived >= weekAgo);
+        }
+        if (search.trim()) {
+          const q = search.trim().toLowerCase();
+          filtered = filtered.filter(d => 
+            d.customerName.toLowerCase().includes(q) || 
+            d.deviceName.toLowerCase().includes(q) || 
+            (d.model || '').toLowerCase().includes(q) || 
+            (d.phone || '').toLowerCase().includes(q) ||
+            (d.serialNumber || '').toLowerCase().includes(q)
+          );
+        }
+        if (sortBy === 'date') {
+          filtered.sort((a, b) => new Date(b.dateReceived) - new Date(a.dateReceived));
+        } else if (sortBy === 'name') {
+          filtered.sort((a, b) => a.customerName.localeCompare(b.customerName));
+        } else if (sortBy === 'price') {
+          filtered.sort((a, b) => (Number(b.price) || 0) - (Number(a.price) || 0));
+        }
+        return filtered;
+      }, [devices, statusFilter, dateFilter, search, sortBy]);
+
+      if (!authed) {
+        return (
+          <div className="flex items-center justify-center min-h-screen p-5">
+            <div className="w-full max-w-sm rounded-3xl p-7 fade-in" style={{ background: 'linear-gradient(180deg, rgba(20,27,48,0.9), rgba(11,15,28,0.9))', border: '2px solid rgba(255,215,0,0.3)', boxShadow: '0 0 60px rgba(255,215,0,0.1)' }}>
+              <div className="flex flex-col items-center mb-4">
+                {/* اسم المهندس طارق بلال بشكل بارز */}
+                <div className="text-2xl font-extrabold gold-text mb-1">المهندس طارق بلال</div>
+                <div className="text-xs text-gray-400">مركز صيانة الأجهزة الذكية</div>
+                <div className="w-16 h-0.5 gold-text bg-gradient-to-r from-yellow-400 to-orange-500 my-2"></div>
+                <div className="text-xs text-gray-500 mt-1">🔑 رمز النظام: {systemRecoveryCode}</div>
+              </div>
+
+              <div className="flex gap-2 mb-4 bg-black/20 rounded-xl p-1">
+                <button onClick={() => { setIsRegisterMode(false); setRegisterError(''); setRegisterSuccess(''); }} 
+                  className={`flex-1 py-2 rounded-lg text-sm font-bold transition ${!isRegisterMode ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+                  تسجيل الدخول
+                </button>
+                <button onClick={() => { setIsRegisterMode(true); setLoginError(''); setPwInput(''); }} 
+                  className={`flex-1 py-2 rounded-lg text-sm font-bold transition ${isRegisterMode ? 'bg-blue-600 text-white' : 'text-gray-400 hover:text-white'}`}>
+                  إنشاء حساب
+                </button>
+              </div>
+
+              {!isRegisterMode ? (
+                <form onSubmit={handleLogin} className="flex flex-col gap-3">
+                  <input type="text" value={pwInput} onChange={(e) => { setPwInput(e.target.value); setLoginError(''); }} 
+                    placeholder="اسم المستخدم / البريد / الهاتف" className="w-full rounded-xl px-3 py-3 text-sm outline-none bg-black/20 border border-yellow-500/30 text-white focus:border-yellow-400 transition" autoFocus />
+                  <div className="relative">
+                    <input type={showPw ? 'text' : 'password'} value={pwInput} onChange={(e) => { setPwInput(e.target.value); setLoginError(''); }} 
+                      placeholder="كلمة المرور" className="w-full rounded-xl px-3 py-3 text-sm outline-none bg-black/20 border border-yellow-500/30 text-white focus:border-yellow-400 transition" />
+                    <button type="button" onClick={() => setShowPw(!showPw)} className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-sm">
+                      {showPw ? '🙈' : '👁️'}
+                    </button>
+                  </div>
+                  {loginError && <div className="text-xs text-red-400">{loginError}</div>}
+                  <button type="submit" className="mt-2 rounded-xl py-3 text-sm font-bold text-white bg-gradient-to-r from-yellow-500 to-orange-500 shadow-lg hover:shadow-xl transition">دخول</button>
+                  <button type="button" onClick={resetPassword} className="text-xs text-gray-500 hover:text-yellow-400 transition">نسيت كلمة المرور؟</button>
+                  {pwMsg.text && <div className={`text-xs ${pwMsg.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>{pwMsg.text}</div>}
+                </form>
+              ) : (
+                <form onSubmit={handleRegister} className="flex flex-col gap-2">
+                  <input type="text" value={registerData.username} onChange={(e) => { setRegisterData({...registerData, username: e.target.value}); setRegisterError(''); }} 
+                    placeholder="اسم المستخدم *" className="w-full rounded-xl px-3 py-2 text-sm outline-none bg-black/20 border border-yellow-500/30 text-white focus:border-yellow-400 transition" required />
+                  <input type="email" value={registerData.email} onChange={(e) => { setRegisterData({...registerData, email: e.target.value}); setRegisterError(''); }} 
+                    placeholder="البريد الإلكتروني *" className="w-full rounded-xl px-3 py-2 text-sm outline-none bg-black/20 border border-yellow-500/30 text-white focus:border-yellow-400 transition" required />
+                  <input type="text" value={registerData.phone} onChange={(e) => { setRegisterData({...registerData, phone: e.target.value}); setRegisterError(''); }} 
+                    placeholder="رقم الهاتف *" className="w-full rounded-xl px-3 py-2 text-sm outline-none bg-black/20 border border-yellow-500/30 text-white focus:border-yellow-400 transition" required />
+                  <input type={showPw ? 'text' : 'password'} value={registerData.password} onChange={(e) => { setRegisterData({...registerData, password: e.target.value}); setRegisterError(''); }} 
+                    placeholder="كلمة المرور (6 أحرف) *" className="w-full rounded-xl px-3 py-2 text-sm outline-none bg-black/20 border border-yellow-500/30 text-white focus:border-yellow-400 transition" required />
+                  <input type={showPw ? 'text' : 'password'} value={registerData.confirmPassword} onChange={(e) => { setRegisterData({...registerData, confirmPassword: e.target.value}); setRegisterError(''); }} 
+                    placeholder="تأكيد كلمة المرور *" className="w-full rounded-xl px-3 py-2 text-sm outline-none bg-black/20 border border-yellow-500/30 text-white focus:border-yellow-400 transition" required />
+                  {registerError && <div className="text-xs text-red-400">{registerError}</div>}
+                  {registerSuccess && <div className="text-xs text-green-400">{registerSuccess}</div>}
+                  <button type="submit" className="mt-2 rounded-xl py-3 text-sm font-bold text-white bg-gradient-to-r from-green-500 to-emerald-500 shadow-lg hover:shadow-xl transition">إنشاء حساب</button>
+                  <div className="text-xs text-center text-gray-500">🔑 سيتم إعطائك رمز استرداد فريد</div>
+                </form>
+              )}
+              
+              {/* توقيع المهندس طارق بلال */}
+              <div className="mt-4 text-center text-[10px] text-gray-600 border-t border-yellow-500/20 pt-3">
+                <span>© 2024 {SYSTEM_OWNER_NAME} - جميع الحقوق محفوظة</span>
+              </div>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="flex flex-col min-h-screen">
+          {/* Header - مع اسم المهندس طارق بلال */}
+          <div className="p-4 border-b border-yellow-500/20 flex flex-wrap justify-between items-center bg-black/40 sticky top-0 z-50 gap-2">
+            <div className="flex items-center gap-3">
+              <div>
+                <div className="text-xs text-gray-400">مرحباً،</div>
+                <div className="text-base font-bold gold-text">{currentUser?.username || 'مستخدم'}</div>
+              </div>
+              <div className="hidden sm:block h-8 w-px bg-yellow-500/20"></div>
+              <div className="hidden sm:block">
+                <div className="text-[10px] text-gray-500">المهندس</div>
+                <div className="text-sm font-bold text-yellow-400">طارق بلال</div>
+              </div>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <div className="text-xs text-yellow-500 bg-black/30 px-2 py-1 rounded-lg border border-yellow-500/20">🔑 {systemRecoveryCode}</div>
+              <button onClick={() => setShowBackupModal(true)} className="px-3 py-1.5 rounded-lg text-xs bg-blue-500/10 text-blue-400 border border-blue-500/20 hover:bg-blue-500/20 transition">
+                💾 نسخ احتياطي
+              </button>
+              <button onClick={() => setAuthed(false)} className="px-3 py-1.5 rounded-lg text-xs bg-red-500/10 text-red-400 border border-red-500/20 hover:bg-red-500/20 transition">خروج</button>
+            </div>
+          </div>
+
+          {/* Tabs */}
+          <div className="flex gap-1 p-3 bg-black/30 border-b border-yellow-500/10 overflow-x-auto">
+            {[
+              { id: 'dashboard', label: '📊 لوحة التحكم' },
+              { id: 'devices', label: '📱 الأجهزة' },
+              { id: 'expenses', label: '💰 المصروفات' },
+              { id: 'reports', label: '📈 التقارير' },
+              { id: 'backup', label: '💾 النسخ الاحتياطي' }
+            ].map(tab => (
+              <button key={tab.id} onClick={() => setActiveTab(tab.id)} 
+                className={`px-4 py-2 rounded-xl text-sm font-bold transition whitespace-nowrap ${activeTab === tab.id ? 'bg-gradient-to-r from-yellow-500 to-orange-500 text-white shadow-lg shadow-yellow-600/30' : 'text-gray-400 hover:text-white hover:bg-white/10'}`}>
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {/* شعار المهندس طارق بلال في لوحة التحكم */}
+          <div className="p-4">
+            <div className="flex items-center gap-3 mb-4 p-3 rounded-2xl bg-gradient-to-r from-yellow-500/10 to-orange-500/10 border border-yellow-500/20">
+              <div className="text-3xl">👨‍🔧</div>
+              <div>
+                <div className="text-sm text-gray-400">مرحباً بك في نظام</div>
+                <div className="text-xl font-extrabold gold-text">مركز صيانة المهندس طارق بلال</div>
+                <div className="text-xs text-gray-500">نظام إدارة صيانة الأجهزة الذكية</div>
+              </div>
+            </div>
+          </div>
+
+          {/* Content */}
+          <div className="flex-1 p-4">
+            {activeTab === 'dashboard' && (
+              <div className="space-y-4">
+                {/* Stats Grid */}
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                    <div className="text-2xl font-bold text-blue-400">{stats.total}</div>
+                    <div className="text-xs text-gray-400">إجمالي الأجهزة</div>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                    <div className="text-2xl font-bold text-yellow-400">{stats.activeCount}</div>
+                    <div className="text-xs text-gray-400">قيد الصيانة</div>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                    <div className="text-2xl font-bold text-teal-400">{stats.readyCount}</div>
+                    <div className="text-xs text-gray-400">جاهز للتسليم</div>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                    <div className="text-2xl font-bold text-green-400">{stats.deliveredCount}</div>
+                    <div className="text-xs text-gray-400">تم التسليم</div>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                    <div className="text-2xl font-bold text-green-400">{stats.totalIncome} ج.م</div>
+                    <div className="text-xs text-gray-400">إجمالي الإيرادات</div>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                    <div className="text-2xl font-bold text-red-400">{stats.totalExpenses} ج.م</div>
+                    <div className="text-xs text-gray-400">المصروفات</div>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                    <div className="text-2xl font-bold text-purple-400">{stats.netProfit} ج.م</div>
+                    <div className="text-xs text-gray-400">صافي الربح</div>
+                  </div>
+                  <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                    <div className="text-2xl font-bold text-orange-400">{stats.pending} ج.م</div>
+                    <div className="text-xs text-gray-400">المتبقي للتحصيل</div>
+                  </div>
+                </div>
+
+                {/* Quick Actions */}
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => { resetDeviceForm(); setShowDeviceForm(true); }} 
+                    className="flex-1 min-w-[120px] py-3 bg-gradient-to-r from-yellow-500 to-orange-500 rounded-xl font-bold text-white shadow-lg shadow-yellow-600/30 hover:shadow-xl transition">
+                    ➕ جهاز جديد
+                  </button>
+                  <button onClick={() => { setShowExpenseForm(true); }} 
+                    className="flex-1 min-w-[120px] py-3 bg-orange-600 rounded-xl font-bold text-white shadow-lg shadow-orange-600/30 hover:bg-orange-700 transition">
+                    💰 مصروف جديد
+                  </button>
+                  <button onClick={() => setActiveTab('devices')} 
+                    className="flex-1 min-w-[120px] py-3 bg-purple-600 rounded-xl font-bold text-white shadow-lg shadow-purple-600/30 hover:bg-purple-700 transition">
+                    📱 عرض الأجهزة
+                  </button>
+                </div>
+
+                {/* Recent Devices */}
+                <div>
+                  <h3 className="text-sm font-bold mb-3">🕐 آخر الأجهزة المستلمة</h3>
+                  <div className="space-y-2">
+                    {devices.slice(0, 5).map(d => (
+                      <div key={d.id} className="p-3 rounded-xl bg-white/5 border border-white/10 flex justify-between items-center">
+                        <div>
+                          <div className="font-bold text-sm">{d.customerName}</div>
+                          <div className="text-xs text-gray-400">{d.deviceName} {d.model}</div>
+                        </div>
+                        <div className="text-right">
+                          <span className="status-badge" style={{ background: STATUS[d.status]?.bg, color: STATUS[d.status]?.color }}>
+                            {STATUS[d.status]?.icon} {STATUS[d.status]?.label}
+                          </span>
+                          <div className="text-xs text-gray-400 mt-1">{d.dateReceived}</div>
+                        </div>
+                      </div>
+                    ))}
+                    {devices.length === 0 && <div className="text-center text-gray-500 text-sm">لا توجد أجهزة مسجلة</div>}
+                  </div>
+                </div>
+
+                {/* توقيع المهندس طارق بلال */}
+                <div className="text-center text-[10px] text-gray-600 border-t border-yellow-500/20 pt-3 mt-4">
+                  <span>© 2024 {SYSTEM_OWNER_NAME} - جميع الحقوق محفوظة</span>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'devices' && (
+              <div className="space-y-4">
+                <div className="flex flex-wrap gap-2">
+                  <button onClick={() => { resetDeviceForm(); setShowDeviceForm(true); }} 
+                    className="px-4 py-2 bg-gradient-to-r from-yellow-500 to-orange-500 rounded-xl text-sm font-bold text-white shadow-lg shadow-yellow-600/30 hover:shadow-xl transition">
+                    ➕ إضافة جهاز
+                  </button>
+                  <input type="text" placeholder="🔍 بحث..." value={search} onChange={(e) => setSearch(e.target.value)} 
+                    className="flex-1 min-w-[150px] rounded-xl px-3 py-2 bg-black/30 border border-white/10 text-white text-sm outline-none focus:border-yellow-500/50 transition" />
+                  <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} 
+                    className="rounded-xl px-3 py-2 bg-black/30 border border-white/10 text-white text-sm outline-none focus:border-yellow-500/50 transition">
+                    <option value="all">كل الحالات</option>
+                    {Object.entries(STATUS).map(([key, val]) => <option key={key} value={key}>{val.label}</option>)}
+                  </select>
+                  <select value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} 
+                    className="rounded-xl px-3 py-2 bg-black/30 border border-white/10 text-white text-sm outline-none focus:border-yellow-500/50 transition">
+                    <option value="all">كل التواريخ</option>
+                    <option value="today">اليوم</option>
+                    <option value="week">آخر 7 أيام</option>
+                  </select>
+                  <select value={sortBy} onChange={(e) => setSortBy(e.target.value)} 
+                    className="rounded-xl px-3 py-2 bg-black/30 border border-white/10 text-white text-sm outline-none focus:border-yellow-500/50 transition">
+                    <option value="date">الأحدث</option>
+                    <option value="name">الاسم</option>
+                    <option value="price">السعر</option>
+                  </select>
+                </div>
+
+                <div className="space-y-2">
+                  {filteredDevices.map(d => (
+                    <div key={d.id} className="p-4 rounded-2xl bg-white/5 border border-white/10 hover:border-yellow-500/30 transition">
+                      <div className="flex flex-wrap justify-between items-start gap-2">
+                        <div className="flex-1 min-w-[150px]">
+                          <div className="font-bold text-white">{d.customerName}</div>
+                          <div className="text-sm text-gray-400">{d.deviceName} {d.model}</div>
+                          {d.phone && <div className="text-xs text-gray-500">📱 {d.phone}</div>}
+                          {d.serialNumber && <div className="text-xs text-gray-500">🔢 {d.serialNumber}</div>}
+                          <div className="text-xs text-gray-500 mt-1">📅 {d.dateReceived}</div>
+                          {d.issue && <div className="text-xs text-gray-400 mt-1">⚠️ {d.issue}</div>}
+                        </div>
+                        <div className="text-right">
+                          <span className="status-badge" style={{ background: STATUS[d.status]?.bg, color: STATUS[d.status]?.color }}>
+                            {STATUS[d.status]?.icon} {STATUS[d.status]?.label}
+                          </span>
+                          {d.price && <div className="text-sm font-bold text-green-400 mt-1">{d.price} ج.م</div>}
+                          {d.deposit && <div className="text-xs text-gray-400">دفع: {d.deposit} ج.م</div>}
+                          <div className="flex gap-1 mt-2 justify-end">
+                            <button onClick={() => setShowDeviceDetails(d)} className="px-2 py-1 text-xs bg-blue-500/20 text-blue-400 rounded-lg hover:bg-blue-500/30 transition">👁️</button>
+                            <button onClick={() => editDevice(d)} className="px-2 py-1 text-xs bg-yellow-500/20 text-yellow-400 rounded-lg hover:bg-yellow-500/30 transition">✏️</button>
+                            <button onClick={() => setConfirmDeleteId(d.id)} className="px-2 py-1 text-xs bg-red-500/20 text-red-400 rounded-lg hover:bg-red-500/30 transition">🗑️</button>
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex flex-wrap gap-1 mt-2 pt-2 border-t border-white/5">
+                        {Object.entries(STATUS).map(([key, val]) => (
+                          d.status !== key && (
+                            <button key={key} onClick={() => updateStatus(d.id, key)} 
+                              className="px-2 py-1 text-xs rounded-lg hover:bg-white/10 transition" 
+                              style={{ color: val.color, background: val.bg }}>
+                              {val.icon} {val.label}
+                            </button>
+                          )
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                  {filteredDevices.length === 0 && <div className="text-center py-10 text-gray-500 text-sm">لا توجد أجهزة</div>}
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'expenses' && (
+              <div className="space-y-4">
+                <button onClick={() => { setShowExpenseForm(true); }} 
+                  className="px-4 py-2 bg-orange-600 rounded-xl text-sm font-bold text-white shadow-lg shadow-orange-600/30 hover:bg-orange-700 transition">
+                  ➕ إضافة مصروف
+                </button>
+                <div className="space-y-2">
+                  {expenses.map(e => (
+                    <div key={e.id} className="p-4 rounded-2xl bg-white/5 border border-white/10 flex justify-between items-center">
+                      <div>
+                        <div className="font-bold text-white">{e.title}</div>
+                        <div className="text-xs text-gray-400">{e.date}</div>
+                        {e.category && <div className="text-xs text-gray-500">{e.category}</div>}
+                      </div>
+                      <div className="text-right">
+                        <div className="text-lg font-bold text-red-400">{e.amount} ج.م</div>
+                        <button onClick={() => deleteExpense(e.id)} className="text-xs text-red-400 hover:text-red-300">🗑️</button>
+                      </div>
+                    </div>
+                  ))}
+                  {expenses.length === 0 && <div className="text-center py-10 text-gray-500 text-sm">لا توجد مصروفات</div>}
+                </div>
+                <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                  <div className="text-sm text-gray-400">إجمالي المصروفات</div>
+                  <div className="text-2xl font-bold text-red-400">{stats.totalExpenses} ج.م</div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'reports' && (
+              <div className="space-y-4">
+                <div className="p-4 rounded-2xl bg-white/5 border border-white/10">
+                  <h3 className="font-bold mb-2">📊 ملخص التقارير - {SYSTEM_OWNER_NAME}</h3>
+                  <div className="grid grid-cols-2 gap-3 text-sm">
+                    <div><span className="text-gray-400">إجمالي الأجهزة:</span> <span className="font-bold text-white">{stats.total}</span></div>
+                    <div><span className="text-gray-400">قيد الصيانة:</span> <span className="font-bold text-yellow-400">{stats.activeCount}</span></div>
+                    <div><span className="text-gray-400">جاهز للتسليم:</span> <span className="font-bold text-teal-400">{stats.readyCount}</span></div>
+                    <div><span className="text-gray-400">تم التسليم:</span> <span className="font-bold text-green-400">{stats.deliveredCount}</span></div>
+                    <div><span className="text-gray-400">إجمالي الإيرادات:</span> <span className="font-bold text-green-400">{stats.totalIncome} ج.م</span></div>
+                    <div><span className="text-gray-400">المصروفات:</span> <span className="font-bold text-red-400">{stats.totalExpenses} ج.م</span></div>
+                    <div><span className="text-gray-400">صافي الربح:</span> <span className="font-bold text-purple-400">{stats.netProfit} ج.م</span></div>
+                    <div><span className="text-gray-400">المتبقي للتحصيل:</span> <span className="font-bold text-orange-400">{stats.pending} ج.م</span></div>
+                    <div><span className="text-gray-400">أجهزة اليوم:</span> <span className="font-bold text-blue-400">{stats.todayDevices}</span></div>
+                    <div><span className="text-gray-400">أجهزة الأسبوع:</span> <span className="font-bold text-blue-400">{stats.weekDevices}</span></div>
+                  </div>
+                </div>
+                <div className="p-4 rounded-2xl bg-white/5 border border-yellow-500/20">
+                  <h3 className="font-bold mb-2">📞 معلومات النظام</h3>
+                  <div className="text-sm space-y-1">
+                    <div><span className="text-gray-400">المالك:</span> <span className="gold-text font-bold">{SYSTEM_OWNER_NAME}</span></div>
+                    <div><span className="text-gray-400">البريد الإلكتروني:</span> <span className="text-white">{SYSTEM_OWNER_EMAIL}</span></div>
+                    <div><span className="text-gray-400">رقم الهاتف:</span> <span className="text-white">{SYSTEM_OWNER_PHONE}</span></div>
+                    <div><span className="text-gray-400">رمز الاسترداد:</span> <span className="text-yellow-400 font-bold">{systemRecoveryCode}</span></div>
+                    <div><span className="text-gray-400">آخر نسخ احتياطي:</span> <span className="text-white">{lastBackupTime ? new Date(lastBackupTime).toLocaleString('ar-EG') : 'لا يوجد'}</span></div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {activeTab === 'backup' && (
+              <div className="space-y-4">
+                <div className="p-4 rounded-2xl bg-white/5 border border-yellow-500/20">
+                  <h3 className="font-bold mb-4">💾 النسخ الاحتياطي والاسترداد - {SYSTEM_OWNER_NAME}</h3>
+                  
+                  <div className="space-y-4">
+                    <div className="p-3 bg-yellow-500/10 rounded-xl border border-yellow-500/30">
+                      <div className="text-sm text-gray-400">رمز استرداد النظام</div>
+                      <div className="text-2xl font-bold text-yellow-400">{systemRecoveryCode}</div>
+                      <div className="text-xs text-gray-500 mt-1">استخدم هذا الرمز لاستيراد البيانات</div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-2">
+                      <button onClick={() => exportData('json')} className="px-4 py-2 bg-green-600 rounded-xl text-sm font-bold text-white hover:bg-green-700 transition">
+                        📥 تصدير JSON
+                      </button>
+                      <button onClick={() => exportData('csv')} className="px-4 py-2 bg-blue-600 rounded-xl text-sm font-bold text-white hover:bg-blue-700 transition">
+                        📥 تصدير CSV
+                      </button>
+                      <button onClick={() => { setShowImportModal(true); }} className="px-4 py-2 bg-purple-600 rounded-xl text-sm font-bold text-white hover:bg-purple-700 transition">
+                        📤 استيراد بيانات
+                      </button>
+                      <button onClick={() => { autoBackup(); setBackupMsg({ type: 'success', text: 'تم عمل نسخ احتياطي يدوي!' }); setTimeout(() => setBackupMsg({ type: '', text: '' }), 3000); }} 
+                        className="px-4 py-2 bg-gradient-to-r from-yellow-500 to-orange-500 rounded-xl text-sm font-bold text-white hover:shadow-xl transition">
+                        💾 نسخ احتياطي يدوي
+                      </button>
+                    </div>
+
+                    {backupMsg.text && (
+                      <div className={`p-3 rounded-xl text-sm ${backupMsg.type === 'success' ? 'bg-green-500/20 text-green-400 border border-green-500/20' : 'bg-red-500/20 text-red-400 border border-red-500/20'}`}>
+                        {backupMsg.text}
+                      </div>
+                    )}
+
+                    <div className="p-3 bg-gray-500/10 rounded-xl border border-gray-500/20">
+                      <div className="text-sm text-gray-400">معلومات البيانات</div>
+                      <div className="text-sm text-white mt-1">
+                        <div>📱 الأجهزة: {devices.length}</div>
+                        <div>💰 المصروفات: {expenses.length}</div>
+                        <div>👤 المستخدمين: {getUsers().length}</div>
+                        <div>📅 آخر تحديث: {new Date().toLocaleString('ar-EG')}</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+
+          {/* توقيع المهندس طارق بلال في أسفل الصفحة */}
+          <div className="text-center text-[10px] text-gray-600 border-t border-yellow-500/20 py-3 mt-4">
+            <span>© 2024 {SYSTEM_OWNER_NAME} - جميع الحقوق محفوظة</span>
+            <span className="mx-2">|</span>
+            <span>📞 {SYSTEM_OWNER_PHONE}</span>
+            <span className="mx-2">|</span>
+            <span>📧 {SYSTEM_OWNER_EMAIL}</span>
+          </div>
+
+          {/* Device Form Modal */}
+          {showDeviceForm && (
+            <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50" onClick={() => { if (window.confirm('هل تريد إلغاء الإدخال؟')) { setShowDeviceForm(false); resetDeviceForm(); } }}>
+              <div className="w-full max-w-md rounded-3xl p-6 fade-in" style={{ background: 'linear-gradient(180deg, rgba(20,27,48,0.98), rgba(11,15,28,0.98))', border: '2px solid rgba(255,215,0,0.2)', maxHeight: '90vh', overflowY: 'auto' }} onClick={(e) => e.stopPropagation()}>
+                <h3 className="text-lg font-bold mb-4 gold-text">{editingDevice ? '✏️ تعديل جهاز' : '📱 إضافة جهاز جديد'}</h3>
+                <div className="space-y-3">
+                  <input type="text" value={deviceForm.customerName} onChange={(e) => setDeviceForm({...deviceForm, customerName: e.target.value})} 
+                    placeholder="اسم العميل *" className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" />
+                  <input type="text" value={deviceForm.phone} onChange={(e) => setDeviceForm({...deviceForm, phone: e.target.value})} 
+                    placeholder="رقم الهاتف" className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" />
+                  <input type="text" value={deviceForm.deviceName} onChange={(e) => setDeviceForm({...deviceForm, deviceName: e.target.value})} 
+                    placeholder="اسم الجهاز *" className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" />
+                  <input type="text" value={deviceForm.model} onChange={(e) => setDeviceForm({...deviceForm, model: e.target.value})} 
+                    placeholder="الموديل" className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" />
+                  <input type="text" value={deviceForm.serialNumber} onChange={(e) => setDeviceForm({...deviceForm, serialNumber: e.target.value})} 
+                    placeholder="الرقم التسلسلي" className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" />
+                  <textarea value={deviceForm.issue} onChange={(e) => setDeviceForm({...deviceForm, issue: e.target.value})} 
+                    placeholder="العطل" className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" rows="2" />
+                  <input type="number" value={deviceForm.price} onChange={(e) => setDeviceForm({...deviceForm, price: e.target.value})} 
+                    placeholder="سعر الإصلاح" className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" />
+                  <input type="number" value={deviceForm.deposit} onChange={(e) => setDeviceForm({...deviceForm, deposit: e.target.value})} 
+                    placeholder="المدفوع مقدم" className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" />
+                  <input type="date" value={deviceForm.dateReceived} onChange={(e) => setDeviceForm({...deviceForm, dateReceived: e.target.value})} 
+                    className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" />
+                  <input type="text" value={deviceForm.technician} onChange={(e) => setDeviceForm({...deviceForm, technician: e.target.value})} 
+                    placeholder="اسم الفني" className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" />
+                  <select value={deviceForm.status} onChange={(e) => setDeviceForm({...deviceForm, status: e.target.value})} 
+                    className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition">
+                    {Object.entries(STATUS).map(([key, val]) => <option key={key} value={key}>{val.icon} {val.label}</option>)}
+                  </select>
+                  <textarea value={deviceForm.notes} onChange={(e) => setDeviceForm({...deviceForm, notes: e.target.value})} 
+                    placeholder="ملاحظات" className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" rows="2" />
+                  <div className="flex gap-2">
+                    <button onClick={editingDevice ? updateDevice : addDevice} 
+                      className="flex-1 py-3 rounded-xl font-bold text-white bg-gradient-to-r from-yellow-500 to-orange-500 hover:shadow-xl transition">
+                      {editingDevice ? '💾 حفظ' : '➕ إضافة'}
+                    </button>
+                    <button onClick={() => { setShowDeviceForm(false); resetDeviceForm(); }} 
+                      className="flex-1 py-3 rounded-xl font-bold text-white bg-red-600/50 hover:bg-red-700/50 transition">إلغاء</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Device Details Modal */}
+          {showDeviceDetails && (
+            <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50" onClick={() => setShowDeviceDetails(null)}>
+              <div className="w-full max-w-md rounded-3xl p-6 fade-in" style={{ background: 'linear-gradient(180deg, rgba(20,27,48,0.98), rgba(11,15,28,0.98))', border: '2px solid rgba(255,215,0,0.2)' }} onClick={(e) => e.stopPropagation()}>
+                <h3 className="text-lg font-bold mb-4 gold-text">📱 تفاصيل الجهاز</h3>
+                <div className="space-y-2 text-sm">
+                  <div><span className="text-gray-400">العميل:</span> <span className="font-bold text-white">{showDeviceDetails.customerName}</span></div>
+                  <div><span className="text-gray-400">الهاتف:</span> <span className="text-white">{showDeviceDetails.phone || 'غير مسجل'}</span></div>
+                  <div><span className="text-gray-400">الجهاز:</span> <span className="text-white">{showDeviceDetails.deviceName} {showDeviceDetails.model}</span></div>
+                  <div><span className="text-gray-400">الرقم التسلسلي:</span> <span className="text-white">{showDeviceDetails.serialNumber || 'غير مسجل'}</span></div>
+                  <div><span className="text-gray-400">العطل:</span> <span className="text-white">{showDeviceDetails.issue || 'غير مسجل'}</span></div>
+                  <div><span className="text-gray-400">الحالة:</span> <span className="status-badge" style={{ background: STATUS[showDeviceDetails.status]?.bg, color: STATUS[showDeviceDetails.status]?.color }}>{STATUS[showDeviceDetails.status]?.label}</span></div>
+                  <div><span className="text-gray-400">السعر:</span> <span className="font-bold text-green-400">{showDeviceDetails.price || 0} ج.م</span></div>
+                  <div><span className="text-gray-400">المدفوع:</span> <span className="font-bold text-blue-400">{showDeviceDetails.deposit || 0} ج.م</span></div>
+                  <div><span className="text-gray-400">المتبقي:</span> <span className="font-bold text-orange-400">{(Number(showDeviceDetails.price) || 0) - (Number(showDeviceDetails.deposit) || 0)} ج.م</span></div>
+                  <div><span className="text-gray-400">تاريخ الاستلام:</span> <span className="text-white">{showDeviceDetails.dateReceived}</span></div>
+                  {showDeviceDetails.dateDelivered && <div><span className="text-gray-400">تاريخ التسليم:</span> <span className="text-white">{showDeviceDetails.dateDelivered}</span></div>}
+                  <div><span className="text-gray-400">الفني:</span> <span className="text-white">{showDeviceDetails.technician || 'غير محدد'}</span></div>
+                  {showDeviceDetails.notes && <div><span className="text-gray-400">ملاحظات:</span> <span className="text-white">{showDeviceDetails.notes}</span></div>}
+                  <div className="pt-2 border-t border-yellow-500/10 text-[10px] text-gray-500 text-center">© {SYSTEM_OWNER_NAME}</div>
+                </div>
+                <button onClick={() => setShowDeviceDetails(null)} className="mt-4 w-full py-3 rounded-xl bg-gradient-to-r from-yellow-500 to-orange-500 text-white font-bold hover:shadow-xl transition">إغلاق</button>
+              </div>
+            </div>
+          )}
+
+          {/* Expense Form Modal */}
+          {showExpenseForm && (
+            <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50" onClick={() => { if (window.confirm('هل تريد إلغاء الإدخال؟')) { setShowExpenseForm(false); } }}>
+              <div className="w-full max-w-sm rounded-3xl p-6 fade-in" style={{ background: 'linear-gradient(180deg, rgba(20,27,48,0.98), rgba(11,15,28,0.98))', border: '2px solid rgba(255,215,0,0.2)' }} onClick={(e) => e.stopPropagation()}>
+                <h3 className="text-lg font-bold mb-4 gold-text">💰 إضافة مصروف</h3>
+                <div className="space-y-3">
+                  <input type="text" value={expenseForm.title} onChange={(e) => setExpenseForm({...expenseForm, title: e.target.value})} 
+                    placeholder="عنوان المصروف *" className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" />
+                  <input type="number" value={expenseForm.amount} onChange={(e) => setExpenseForm({...expenseForm, amount: e.target.value})} 
+                    placeholder="المبلغ *" className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" />
+                  <input type="text" value={expenseForm.category} onChange={(e) => setExpenseForm({...expenseForm, category: e.target.value})} 
+                    placeholder="التصنيف" className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" />
+                  <input type="date" value={expenseForm.date} onChange={(e) => setExpenseForm({...expenseForm, date: e.target.value})} 
+                    className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" />
+                  <div className="flex gap-2">
+                    <button onClick={addExpense} className="flex-1 py-3 rounded-xl font-bold text-white bg-gradient-to-r from-yellow-500 to-orange-500 hover:shadow-xl transition">➕ إضافة</button>
+                    <button onClick={() => { setShowExpenseForm(false); }} className="flex-1 py-3 rounded-xl font-bold text-white bg-red-600/50 hover:bg-red-700/50 transition">إلغاء</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Confirm Delete Modal */}
+          {confirmDeleteId && (
+            <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50" onClick={() => setConfirmDeleteId(null)}>
+              <div className="w-full max-w-sm rounded-3xl p-6 fade-in" style={{ background: 'linear-gradient(180deg, rgba(20,27,48,0.98), rgba(11,15,28,0.98))', border: '2px solid rgba(255,215,0,0.2)' }} onClick={(e) => e.stopPropagation()}>
+                <h3 className="text-lg font-bold text-red-400 mb-2">⚠️ تأكيد الحذف</h3>
+                <p className="text-sm text-gray-400 mb-4">هل أنت متأكد من حذف هذا الجهاز؟</p>
+                <div className="flex gap-2">
+                  <button onClick={() => deleteDevice(confirmDeleteId)} className="flex-1 py-3 rounded-xl font-bold text-white bg-red-600 hover:bg-red-700 transition">🗑️ حذف</button>
+                  <button onClick={() => setConfirmDeleteId(null)} className="flex-1 py-3 rounded-xl font-bold text-white bg-gray-600/50 hover:bg-gray-700/50 transition">إلغاء</button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Import Modal */}
+          {showImportModal && (
+            <div className="fixed inset-0 bg-black/70 backdrop-blur-sm flex items-center justify-center p-4 z-50" onClick={() => { setShowImportModal(false); }}>
+              <div className="w-full max-w-md rounded-3xl p-6 fade-in" style={{ background: 'linear-gradient(180deg, rgba(20,27,48,0.98), rgba(11,15,28,0.98))', border: '2px solid rgba(255,215,0,0.2)' }} onClick={(e) => e.stopPropagation()}>
+                <h3 className="text-lg font-bold mb-4 gold-text">📤 استيراد البيانات</h3>
+                <div className="space-y-3">
+                  <div className="text-xs text-gray-400">ألصق بيانات JSON للاستيراد (يجب أن يحتوي على رمز الاسترداد الصحيح)</div>
+                  <textarea value={importText} onChange={(e) => setImportText(e.target.value)} 
+                    placeholder="ألصق JSON هنا..." className="w-full rounded-xl px-3 py-2 bg-black/20 border border-yellow-500/30 text-white text-sm outline-none focus:border-yellow-400 transition" rows="6" />
+                  {importMsg.text && <div className={`text-xs ${importMsg.type === 'success' ? 'text-green-400' : 'text-red-400'}`}>{importMsg.text}</div>}
+                  <div className="flex gap-2">
+                    <button onClick={() => importData(importText)} className="flex-1 py-3 rounded-xl font-bold text-white bg-gradient-to-r from-yellow-500 to-orange-500 hover:shadow-xl transition">📤 استيراد</button>
+                    <button onClick={() => { setShowImportModal(false); setImportText(''); setImportMsg({ type: '', text: '' }); }} 
+                      className="flex-1 py-3 rounded-xl font-bold text-white bg-red-600/50 hover:bg-red-700/50 transition">إلغاء</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    }
+
+    ReactDOM.render(<App />, document.getElementById('root'));
+  </script>
+</body>
+</html>
